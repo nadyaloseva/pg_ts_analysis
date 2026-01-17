@@ -1,0 +1,6 @@
+# PostgreSQL Time Series Analysis Extension
+comment = 'ACF, PACF, STL decomposition for PostgreSQL'
+default_version = '1.0'
+module_pathname = '$libdir/stl_ext'
+relocatable = true
+requires = 'timescaledb'
