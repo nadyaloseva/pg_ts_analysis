@@ -1,0 +1,12 @@
+# Compiled files
+*.so
+*.o
+*.bc
+
+# Temp files
+*~
+*.tmp
+
+# Results
+results/
+*.txt
