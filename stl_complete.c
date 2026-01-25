@@ -6,12 +6,12 @@
 
 PG_MODULE_MAGIC;
 
-// ========== ДЕКЛАРАЦИИ ФУНКЦИЙ (ТОЛЬКО ЗДЕСЬ! ОДИН РАЗ!) ==========
+// ДЕКЛАРАЦИИ ФУНКЦИЙ
 PG_FUNCTION_INFO_V1(acf_array);
 PG_FUNCTION_INFO_V1(pacf_array);
 PG_FUNCTION_INFO_V1(stl_decompose);
 
-// ========== ACF (твоя рабочая функция) ==========
+// ACF
 static double acf_lag(const double *data, int n, int lag) {
     if (lag >= n || n < 2) return 0.0;
     
@@ -46,7 +46,7 @@ Datum acf_array(PG_FUNCTION_ARGS) {
     PG_RETURN_ARRAYTYPE_P(acf_result);
 }
 
-// ========== PACF (твоя рабочая функция) ==========
+//  PACF 
 static double pacf_lag(const double *data, int n, int lag) {
     if (lag >= n || n < 2) return 0.0;
     
@@ -82,7 +82,7 @@ Datum pacf_array(PG_FUNCTION_ARGS) {
     PG_RETURN_ARRAYTYPE_P(pacf_result);
 }
 
-// ========== STL (ИСПРАВЛЕННАЯ НОВАЯ ФУНКЦИЯ) ==========
+//  STL
 Datum stl_decompose(PG_FUNCTION_ARGS) {
     ArrayType *arr = PG_GETARG_ARRAYTYPE_P(0);
     int32 period = PG_GETARG_INT32(1);
@@ -93,7 +93,7 @@ Datum stl_decompose(PG_FUNCTION_ARGS) {
     double *data = (double *) ARR_DATA_PTR(arr);
     Datum *result = palloc(n * sizeof(Datum));
     
-    // ✅ ЭКСПОНЕНЦИАЛЬНОЕ СГЛАЖИВАНИЕ (реальный тренд)
+    // ЭКСПОНЕНЦИАЛЬНОЕ СГЛАЖИВАНИE
     double alpha = 0.3;
     double trend = data[0];
     
@@ -104,7 +104,6 @@ Datum stl_decompose(PG_FUNCTION_ARGS) {
         result[i] = Float8GetDatum(trend);
     }
     
-    // ✅ Возвращаем ТОЛЬКО ТРЕНД (правильный размер!)
     ArrayType *res_arr = construct_array(result, n, FLOAT8OID, 
                                         sizeof(double), true, 'd');
     PG_RETURN_ARRAYTYPE_P(res_arr);
