@@ -1,6 +1,16 @@
-ACF, PACF, STL decomposition for flight delays analysis.
+Репозиторий создан для создания расширения PostgreSQL для анализа временных рядов. 
+Его можно переиспользовать в базе данных установив с помощью коианды ниже: 
 
 ## Install
 ```bash
 make install
 psql -d demo -c "CREATE EXTENSION stl_ext;"
+```
+
+Репозиторий содержит следующие файлы:
+
+* Makefile – файл отвечает за сборку и установку расширения PostgreSQL
+* stl_complete.c - файл с бизнес-логикой расширения, написанной на языке C (ACF, PACF, STL)
+* stl_ext.control – файл с описанием метаданных расширения
+* stl_ext.sql - файл, который связывает C-код с SQL
+
