@@ -207,4 +207,241 @@ out[k-1] = phi[k][k];}
 
 
 ### stl_decompose
-Returns trend component using exponential smoothing.
+
+STL (Seasonal-Trend decomposition using LOESS) — метод разложения временного ряда на три компоненты:
+
+- тренд $T_t$
+- сезонность $S_t$
+- остаток $R_t$
+
+$$
+y_t = T_t + S_t + R_t
+$$
+
+Метод основан на локально-взвешенной регрессии (LOESS) и итеративной схеме уточнения компонент.
+
+---
+
+**1. Общая итеративная схема STL**
+
+Алгоритм выполняется итеративно:
+
+- удаляется тренд
+- оценивается сезонность
+- пересчитывается тренд
+- при необходимости обновляются робастные веса
+
+В коде функции
+```
+for (int o = 0; o < n_outer; o++) {
+    const double *wrob = (o == 0) ? NULL : rw;
+
+    for (int inner = 0; inner < cfg->inner_iter; inner++) {
+
+        for (int i = 0; i < n; i++)
+            detr[i] = y[i] - trend[i];
+
+        seasonal_step(detr, n, cfg->period,
+                      cfg->seasonal, cfg->low_pass,
+                      cfg->seasonal_deg, cfg->low_pass_deg,
+                      cfg->seasonal_jump, cfg->low_pass_jump,
+                      wrob, season);
+
+        for (int i = 0; i < n; i++)
+            desea[i] = y[i] - season[i];
+
+        trend_step(desea, n,
+                   cfg->trend, cfg->trend_deg, cfg->trend_jump,
+                   wrob, trend);
+    }
+
+    if (cfg->robust && o < n_outer - 1)
+        compute_robust_weights(y, trend, season, n, rw);
+}
+```
+
+2. LOESS (локальная регрессия)
+
+Трикубическая функция весов:
+
+$$
+w(x)=\left(1-|x|^3\right)^3
+$$
+
+В коде функции
+
+```
+static double tricube(double x) {
+    x = fabs(x);
+    if (x >= 1.0) return 0.0;
+    double t = 1.0 - x * x * x;
+    return t * t * t;
+}
+```
+Локальная линейная регрессия
+
+$$
+y = a + bx
+$$
+
+$$
+b = \frac{\sum w x y - \sum w x \sum w y}{\sum w x^2 - (\sum w x)^2}
+$$
+
+$$
+a = \frac{\sum w y - b \sum w x}{\sum w}
+$$
+
+В коде функции
+```
+double sw = 0, swx = 0, swy = 0, swxx = 0, swxy = 0;
+
+for (int j = 0; j < nd; j++) {
+    double w = tricube(dist[j] / dmax);
+    if (wrob) w *= wrob[j];
+
+    sw   += w;
+    swx  += w * xd[j];
+    swy  += w * yd[j];
+    swxx += w * xd[j] * xd[j];
+    swxy += w * xd[j] * yd[j];
+}
+
+double b = (sw * swxy - swx * swy) / (sw * swxx - swx * swx);
+double a = (swy - b * swx) / sw;
+```
+
+3. Jump-интерполяция LOESS
+
+В коде функции
+```
+for (int i = 0; i < nq; i += jump)
+    sidx[ns++] = i;
+
+if (sidx[ns - 1] != nq - 1)
+    sidx[ns++] = nq - 1;
+```
+4. Сезонная компонента
+
+$$
+y^{(p)} = {y_p, y_{p+P}, y_{p+2P}, ...}
+$$
+
+В коде функции
+```
+for (int p = 0; p < period; p++) {
+
+    int m = 0;
+    for (int i = p; i < n; i += period) m++;
+
+    double *xsub = malloc(m * sizeof(double));
+    double *ysub = malloc(m * sizeof(double));
+
+    int idx = 0;
+    for (int i = p; i < n; i += period) {
+        xsub[idx] = (double)idx;
+        ysub[idx] = detr[i];
+        idx++;
+    }
+
+    loess_fit(xsub, m, xsub, ysub, m,
+              bw, deg_s, wsub, jump_s, yhat);
+
+    idx = 0;
+    for (int i = p; i < n; i += period)
+        cv[i] = yhat[idx++];
+}
+```
+
+Низкочастотная фильтрация
+
+$$
+S_t = C_v - LOESS(C_v)
+$$
+
+В коде функции
+```
+loess_fit(xs, n, xs, cv, n, n_l, deg_l, NULL, jump_l, lp);
+
+for (int i = 0; i < n; i++)
+    season[i] = cv[i] - lp[i];
+```
+
+5. Тренд
+
+$$
+y_t^{(deseasoned)} = y_t - S_t
+$$
+
+$$
+T_t = LOESS(y_t^{(deseasoned)})
+$$
+
+В коде функции
+```
+for (int i = 0; i < n; i++)
+    desea[i] = y[i] - season[i];
+
+loess_fit(xs, n, xs, desea, n,
+          n_t, deg_t, wrob, jump_t, trend);
+```
+
+6. Остаток
+
+$$
+R_t = y_t - T_t - S_t
+$$
+
+В коде функции
+```
+for (int i = 0; i < n; i++)
+    residual[i] = y[i] - trend[i] - season[i];
+```
+
+7. Робастные веса
+
+$$
+MAD = median(|r_t - median(r)|)
+$$
+
+$$
+w_t = \left(1 - \left(\frac{r_t}{6 \cdot MAD}\right)^2\right)^2
+$$
+
+В коде функции
+```c
+for (int i = 0; i < n; i++)
+    r[i] = y[i] - trend[i] - season[i];
+
+double mad = mad_vec(r, n);
+double c = 6.0 * mad;
+
+for (int i = 0; i < n; i++)
+    rw[i] = bisquare(r[i] / c);
+```
+
+8. Автовыбор параметров
+
+Тренд:
+
+$$
+n_t = \text{next odd integer} > \frac{1.5P}{1 - 1.5/n_s}
+$$
+
+
+В коде функции
+```
+double t = 1.5 * c->period / (1.0 - 1.5 / (double)c->seasonal);
+c->trend = next_odd_gt(t);
+```
+
+Низкочастотное окно:
+
+$$
+n_l > P
+$$
+
+В коде функции
+```
+c->low_pass = next_odd_gt((double)c->period);
+```
