@@ -16,5 +16,5 @@ COPY Makefile      .
 # Собираем и устанавливаем расширение
 RUN make && make install
 
-# Скрипт создания расширения выполняется первым (01_)
+# Скрипт создания расширения выполняется первым 
 COPY docker/01_create_extension.sql /docker-entrypoint-initdb.d/01_create_extension.sql
