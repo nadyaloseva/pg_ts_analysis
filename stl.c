@@ -1,12 +1,3 @@
-/*
- * pg_stl — PostgreSQL extension: STL time-series decomposition
- * Совместим с statsmodels.tsa.seasonal.STL (Cleveland 1990).
- *
- * Исправления vs предыдущей версии:
- *   1. Все объявления вынесены в начало блоков (C89/C90 compliance).
- *   2. DirectFunctionCall1(float8, ...) заменён на float8in +
- *      OidFunctionCall1 — корректный способ конвертации в PG 16.
- */
 
 #include "postgres.h"
 #include "fmgr.h"
@@ -23,9 +14,7 @@ PG_MODULE_MAGIC;
 PG_FUNCTION_INFO_V1(acf_array);
 PG_FUNCTION_INFO_V1(pacf_array);
 
-/* ================================================================== */
-/* ACF                                                                  */
-/* ================================================================== */
+/* ACF*/
 static double acf_lag(const double *data, int n, int lag)
 {
     double mean;
@@ -80,9 +69,9 @@ Datum acf_array(PG_FUNCTION_ARGS)
     PG_RETURN_ARRAYTYPE_P(acf_result);
 }
 
-/* ================================================================== */
-/* PACF (Yule-Walker)                                                   */
-/* ================================================================== */
+
+/* PACF (Yule-Walker)*/
+
 static void pacf_yw(const double *x, int n, int max_lag, double *out)
 {
     double *r;
@@ -177,10 +166,7 @@ Datum pacf_array(PG_FUNCTION_ARGS)
 }
 
 
-
-/* ================================================================== */
 /* Вспомогательные функции                                             */
-/* ================================================================== */
 
 static int cmp_double(const void *a, const void *b)
 {
@@ -239,10 +225,10 @@ static int next_odd_gt(double x)
     return v;
 }
 
-/* ================================================================== */
-/* LOESS в одной точке x0                                             */
-/*   Предиктор центрирован: dx = xi - x0 (числовая стабильность)     */
-/* ================================================================== */
+
+/* LOESS в одной точке x0  */
+/*   Предиктор центрирован: dx = xi - x0 */
+
 static double loess_at(double x0,
                        const double *xd, const double *yd, int nd,
                        int bandwidth, int deg,
@@ -296,10 +282,8 @@ static double loess_at(double x0,
     return sw_y / sw;
 }
 
-/* ================================================================== */
 /* LOESS по массиву запросных точек с jump-интерполяцией              */
 /*   Последняя точка nq-1 всегда вычисляется точно.                  */
-/* ================================================================== */
 static void loess_fit(const double *xs, int nq,
                       const double *xd, const double *yd, int nd,
                       int bandwidth, int deg,
@@ -352,12 +336,7 @@ static void loess_fit(const double *xs, int nq,
     pfree(sval);
 }
 
-/* ================================================================== */
-/* Low-pass seasonal фильтр: три прохода LOESS                        */
-/*   pass 1: LOESS(n_l)                                               */
-/*   pass 2: LOESS(n_l)                                               */
-/*   pass 3: LOESS(3)                                                 */
-/* ================================================================== */
+/* Три прохода LOESS                        */
 static void low_pass_seasonal(const double *cv, int n,
                                int n_l, int deg_l, int jump_l,
                                double *lp)
@@ -379,9 +358,9 @@ static void low_pass_seasonal(const double *cv, int n,
     pfree(xs);
 }
 
-/* ================================================================== */
-/* Сезонный шаг                                                        */
-/* ================================================================== */
+
+/* Сезонный шаг */
+
 static void seasonal_step(const double *detr, int n, int period,
                            int n_s, int n_l,
                            int deg_s, int deg_l,
@@ -446,9 +425,8 @@ static void seasonal_step(const double *detr, int n, int period,
     pfree(xs);
 }
 
-/* ================================================================== */
-/* Шаг тренда                                                          */
-/* ================================================================== */
+
+/* Шаг тренда */
 static void trend_step(const double *desea, int n,
                         int n_t, int deg_t, int jump_t,
                         const double *wrob, double *trend)
@@ -461,9 +439,9 @@ static void trend_step(const double *desea, int n,
     pfree(xs);
 }
 
-/* ================================================================== */
-/* Робастные веса (bisquare)                                           */
-/* ================================================================== */
+
+/* Робастные веса (bisquare) */
+
 static void compute_robust_weights(const double *y,
                                     const double *trend,
                                     const double *season,
@@ -480,9 +458,9 @@ static void compute_robust_weights(const double *y,
     pfree(r);
 }
 
-/* ================================================================== */
-/* Конфигурация STL                                                    */
-/* ================================================================== */
+
+/* Конфигурация STL */
+
 typedef struct {
     int period;
     int seasonal;
@@ -513,9 +491,9 @@ static void stl_resolve(STLConfig *c)
         c->outer_iter = 15;
 }
 
-/* ================================================================== */
-/* Ядро декомпозиции                                                   */
-/* ================================================================== */
+
+/* Ядро декомпозиции */
+
 static void stl_core(const double *y, int n,
                       STLConfig *cfg,
                       double *trend, double *season, double *residual)
@@ -570,9 +548,9 @@ static void stl_core(const double *y, int n,
     pfree(rw);
 }
 
-/* ================================================================== */
-/* Упаковка массива double[] в PostgreSQL ArrayType                    */
-/* ================================================================== */
+
+/* Упаковка массива double[] в PostgreSQL ArrayType  */
+
 static ArrayType *double_array_to_pg(const double *data, int n)
 {
     Datum *elems;
@@ -584,9 +562,6 @@ static ArrayType *double_array_to_pg(const double *data, int n)
                            sizeof(double), FLOAT8PASSBYVAL, 'd');
 }
 
-/* ================================================================== */
-/* Datum: stl_decompose                                                */
-/* ================================================================== */
 PG_FUNCTION_INFO_V1(stl_decompose);
 
 Datum stl_decompose(PG_FUNCTION_ARGS)
@@ -695,9 +670,8 @@ Datum stl_decompose(PG_FUNCTION_ARGS)
     PG_RETURN_DATUM(HeapTupleGetDatum(tuple));
 }
 
-/* ================================================================== */
-/* Общий хелпер для stl_trend / stl_seasonal / stl_residual           */
-/* ================================================================== */
+
+/* удобная инициализация для stl_trend / stl_seasonal / stl_residual */
 static ArrayType *stl_component(PG_FUNCTION_ARGS, int component)
 {
     ArrayType  *arr;
