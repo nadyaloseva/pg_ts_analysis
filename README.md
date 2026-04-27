@@ -15,7 +15,7 @@ pg_stl/
 ```
 ## Установка
 
-### Через Docker (рекомендуется для разработки)
+### Через Docker
 
 ```bash
 docker compose up --build
