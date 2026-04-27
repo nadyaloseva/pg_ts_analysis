@@ -16,10 +16,5 @@ COPY Makefile      .
 # Собираем и устанавливаем расширение
 RUN make && make install
 
-# Копируем тестовый SQL-скрипт в директорию автозапуска PostgreSQL.
-# Все .sql файлы из /docker-entrypoint-initdb.d/ выполняются
-# автоматически при первом старте контейнера.
-COPY sql/stl_test.sql /docker-entrypoint-initdb.d/02_stl_test.sql
-
 # Скрипт создания расширения выполняется первым (01_)
 COPY docker/01_create_extension.sql /docker-entrypoint-initdb.d/01_create_extension.sql
