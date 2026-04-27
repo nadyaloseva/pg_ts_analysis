@@ -3,7 +3,7 @@ OBJS         = stl.o
 EXTENSION    = pg_stl
 DATA = pg_stl--1.0.sql
 
-# Флаги компилятора: строгие предупреждения + math
+# Флаги компилятора
 PG_CFLAGS    = -Wall -Wextra -Wno-unused-parameter -O2
 SHLIB_LINK   = -lm
 
