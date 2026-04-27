@@ -11,8 +11,7 @@ pg_stl/
 ├── Makefile               # Конфигурация сборки (PGXS)
 ├── docker-compose.yml
 ├── Dockerfile
-├── docker/
-   └── 01_create_extension.sql
+├── 01_create_extension.sql
 ```
 ## Установка
 
