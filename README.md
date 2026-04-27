@@ -1,446 +1,291 @@
-Репозиторий создан для создания расширения PostgreSQL для анализа временных рядов. 
+# pg_stl 
 
-Состав расширение PostgreSQL для анализа временных рядов:
-- Автокорреляционная функция (ACF)
-- Частичная автокорреляционная функция (PACF)
-- STL-декомпозиция
+Расширение PostgreSQL для анализа временных рядов, реализующее три классических метода: автокорреляционную функцию (ACF), частичную автокорреляционную функцию (PACF) и STL-декомпозицию.
 
+## Структура проекта
+```
+pg_stl/
+├── stl.c                  # Реализация на C (ACF, PACF, ядро STL)
+├── pg_stl--1.0.sql        # Определения SQL-функций
+├── pg_stl.control         # Метаданные расширения
+├── Makefile               # Конфигурация сборки (PGXS)
+├── docker-compose.yml
+├── Dockerfile
+├── docker/
+   └── 01_create_extension.sql
+```
 ## Установка
+
+### Через Docker (рекомендуется для разработки)
+
 ```bash
-make install
-psql -d demo -c "CREATE EXTENSION stl_ext;"
+docker compose up --build
 ```
 
-Репозиторий содержит следующие файлы:
+### Ручная сборка
 
-* Makefile – файл отвечает за сборку и установку расширения PostgreSQL
-* stl_complete.c - файл с бизнес-логикой расширения, написанной на языке C (ACF, PACF, STL)
-* stl_ext.control – файл с описанием метаданных расширения
-* stl_ext.sql - файл, который связывает C-код с SQL
+```bash
+make
+make install
+psql -d mydb -c "CREATE EXTENSION pg_stl;"
+```
 
-## Использование 
+**Требования:** PostgreSQL 16, `postgresql-server-dev-16`, `build-essential`.
+
+## Функции
+
+### acf\_array
 
 ```sql
-SELECT acf_array(ARRAY[1,2,3,4,5], 3);
-SELECT pacf_array(ARRAY[1,2,3,4,5], 3);
-SELECT stl_decompose(ARRAY[1,2,3,4,5], 7);
+acf_array(data double precision[], lags integer)
+RETURNS double precision[]
 ```
 
+Возвращает массив значений ACF для лагов от 1 до `lags`.
 
-## Описание функций 
-
-### acf_array
-Автокорреляционная функция (ACF) используется для оценки зависимости значений временного ряда от его прошлых значений.
-
-**Математическое определение**
+**Алгоритм:**
 
 Для временного ряда $x_1, x_2, \dots, x_n$ автокорреляция для лага $k$ определяется как:
 
 $$
-ACF(k) = \frac{\sum_{i=1}^{n-k}(x_i - \bar{x})(x_{i+k} - \bar{x})}{\sum_{i=1}^{n}(x_i - \bar{x})^2}
+\text{ACF}(k) = \frac{\sum_{i=1}^{n-k}(x_i - \bar{x})(x_{i+k} - \bar{x})}{\sum_{i=1}^{n-k}(x_i - \bar{x})^2}
 $$
 
-где:
-- $x_i$ — значение временного ряда;
-- $\bar{x}$ — среднее значение ряда;
-- $n$ — длина ряда;
-- $k$ — лаг.
-  
-В коде функции
+Важно: и числитель, и знаменатель суммируются по $n-k$ слагаемым (а не по $n$). Это *смещённая* оценка — она предотвращает завышение значений ACF при больших лагах, где остаётся мало наблюдений.
+
+**Пример:**
+
+```sql
+-- Проверяем, есть ли в ряду недельная сезонность
+SELECT acf_array(
+    array_agg(revenue ORDER BY date)::double precision[],
+    28  -- 4 недели лагов
+)
+FROM daily_sales;
+-- Пики у лагов 7, 14, 21 указывают на недельный паттерн
 ```
-return cov_lag / var0;
+
+**Возвращает NULL**, если `n < 2`, `lags < 1` или `lags >= n`.
+
+
+### pacf\_array
+
+```sql
+pacf_array(data double precision[], lags integer)
+RETURNS double precision[]
 ```
 
-**Описание алгоритма**
+Возвращает массив значений PACF для лагов от 1 до `lags`.
 
-Вычисление среднего значения
+**Зачем PACF, если есть ACF?**
 
-$$
-\bar{x} = \frac{1}{n} \sum_{i=1}^{n} x_i
-$$
+PACF выделяет *прямую* зависимость при лаге $k$, исключая влияние лагов от 1 до $k-1$.
 
-В коде функции
-```
-double mean = 0;
-for (int i = 0; i < n; i++) mean += data[i];
-mean /= n;
-```
-Центрирование временного ряда
+**Алгоритм — рекурсия Дурбина-Левинсона:**
 
-Каждое значение преобразуется следующим образом:
-
-$$
-d_i = x_i - \bar{x}
-$$
-
-В коде функции
-```
-double d1 = data[i] - mean;
-double d2 = data[i + lag] - mean;
-```
-Центрирование необходимо для корректного вычисления ковариации.
-
-Вычисление ковариации для лага $k$
-
-$$
-cov(k) = \sum_{i=1}^{n-k} d_i \cdot d_{i+k}
-$$
-
-В коде функции
-```
-cov_lag += d1 * d2;
-```
-Вычисление дисперсии
-
-$$
-var = \sum_{i=1}^{n-k} d_i^2
-$$
-
-В коде функции
-```
-var0 += d1 * d1;
-```
-В реализации используется практическая форма оценки автокорреляции, при которой сумма в числителе и знаменателе вычисляется по одинаковому числу наблюдений (n − k). Это позволяет избежать смещения оценки при больших значениях лага.
-
-Вычисление автокорреляции
-
-$$
-ACF(k) = \frac{cov(n)}{var}
-$$
-
-В коде функции
-```
-var0 += d1 * d1;
-```
-Если дисперсия близка к нулю, значение ACF принимается равным нулю для предотвращения деления на ноль.
-
-
-### pacf_array
-Частичная автокорреляционная функция показывает зависимость между текущим значением временного ряда и его значением на лаге $k$, исключая влияние промежуточных лагов.
-В отличие от автокорреляционной функции (ACF), PACF отражает **прямую зависимость** между значениями ряда.
-
-**Математическое определение**
-
-PACF определяется как коэффициент $\phi_{k,k}$ в авторегрессионной модели порядка $k$:
-
-$$
-x_t = \phi_{k,1} x_{t-1} + \phi_{k,2} x_{t-2} + \dots + \phi_{k,k} x_{t-k} + \varepsilon_t
-$$
-
-где:
-- $\phi_{k,k}$ — значение PACF на лаге $k$;
-- $\varepsilon_t$ — случайная ошибка.
-
-**Описание алгоритма**
-
-На первом этапе вычисляется автоковариационная функция:
+Шаг 1. Вычисляем автоковариационную функцию:
 
 $$
 r(k) = \frac{1}{n} \sum_{i=1}^{n-k}(x_i - \bar{x})(x_{i+k} - \bar{x})
 $$
 
-где:
-- $\bar{x}$ — среднее значение ряда. Вычисляется среднее значение временного ряда, необходимое для центрирования данных.
+Шаг 2. Инициализация: $\sigma_0 = r(0)$.
 
-В коде функции
-```
-for (int i = 0; i < n - k; i++) {
-    sum += (x[i] - mean) * (x[i + k] - mean);
-}
-r[k] = (n > 0) ? sum / n : 0.0;
-```
-
-Для вычисления PACF используется рекурсивная схема Юла–Уокера.
-
-Начальное значение дисперсии:
-
-$$
-\sigma_0 = r(0)
-$$
-
-Основная формула Юла–Уокера для каждого лага $k$:
-
-Для каждого лага $k$:
+Шаг 3. Для каждого лага $k = 1, 2, \dots$:
 
 $$
 \phi_{k,k} = \frac{r(k) - \sum_{j=1}^{k-1} \phi_{k-1,j} \cdot r(k-j)}{\sigma_{k-1}}
 $$
 
-
-Обновление коэффициентов авторегрессионной модели.
-
 $$
 \phi_{k,j} = \phi_{k-1,j} - \phi_{k,k} \cdot \phi_{k-1,k-j}, \quad j = 1, \dots, k-1
 $$
 
-
-Обновление дисперсии ошибки
-
 $$
-\sigma_k = \sigma_{k-1} \cdot (1 - \phi_{k,k}^2)
+\sigma_k = \sigma_{k-1}(1 - \phi_{k,k}^2)
 $$
 
-В коде функции
-```
-sigma[0] = r[0];
-for (int k = 1; k <= max_lag; k++) {
-    double sum = 0.0;
-    for (int j = 1; j < k; j++) {sum += phi[k-1][j] * r[k - j];}
-    phi[k][k] = (r[k] - sum) / sigma[k-1];
-    for (int j = 1; j < k; j++) {phi[k][j] = phi[k-1][j] - phi[k][k] * phi[k-1][k-j];}
-    sigma[k] = sigma[k-1] * (1.0 - phi[k][k] * phi[k][k]);
-    out[k-1] = phi[k][k];}
-}
-```
-Значение частичной автокорреляции для лага $k$ определяется как:
+Значение PACF при лаге $k$ равно $\phi_{k,k}$.
 
-$$
-PACF(k) = \phi_{k,k}
-$$
+**Практическое применение:**
 
-В коде функции
-```
-out[k-1] = phi[k][k];}
+```sql
+WITH series AS (
+    SELECT array_agg(value ORDER BY dt)::double precision[] AS arr
+    FROM my_table
+)
+SELECT
+    unnest(acf_array(arr,  20)) AS acf,
+    unnest(pacf_array(arr, 20)) AS pacf
+FROM series;
 ```
 
-Результаты для всех лагов сохраняются в массив и возвращаются пользователю.
+**Возвращает NULL**, если `n < 2`, `lags < 1` или `lags >= n`.
 
 
 ### stl_decompose
 
-STL (Seasonal-Trend decomposition using LOESS) — метод разложения временного ряда на три компоненты:
+```sql
+stl_decompose(
+    y            double precision[],
+    period       integer, -- Длина сезонного цикла (например, 7 для недельного, 12 для месячного)
+    seasonal     integer  DEFAULT 7, --  Окно LOESS для сглаживания сезонности. Нечётное целое ≥ 3. Больше = более гладкая сезонность 
+    robust       boolean  DEFAULT true, -- Робастное взвешивание для снижения влияния выбросов
+    trend        integer  DEFAULT 0, -- Окно LOESS для сглаживания тренда. 0 = вычисляется автоматически
+    low_pass     integer  DEFAULT 0, -- Окно низкочастотного фильтра. 0 = вычисляется автоматически
+    inner_iter   integer  DEFAULT 2, -- Число итераций внутреннего цикла
+    outer_iter   integer  DEFAULT 0 -- Число итераций внешнего цикла. 0 = авто (15 при robust=true)
+)
+RETURNS stl_result  -- (trend double precision[], seasonal double precision[], residual double precision[])
+```
+Разложение временного рядя на тренд, сезонность и остаток методом STL 
 
-- тренд $T_t$
-- сезонность $S_t$
-- остаток $R_t$
+| Компонента | Что показывает |
+|-----------|---------------|
+| `trend` | Долгосрочный рост или спад, очищенный от сезонности и шума |
+| `seasonal` | Повторяющийся паттерн внутри каждого периода. Стоит проверить, стабилен ли он со временем — если меняется, рассмотрите другую модель |
+| `residual` | Всё, что осталось. В норме должно выглядеть как белый шум. Пики указывают на аномалии, структурные изменения или события, не охваченные трендом и сезонностью |
+
+
+**Ограничения:**
+
+- Входной массив должен быть типа `double precision[]`
+- Длина ряда должна быть ≥ `2 * period`
+- `seasonal` должен быть нечётным целым числом ≥ 3
+- NULL-значения в массиве не допускаются
+
+**Пример:**
+
+```sql
+-- Декомпозиция месячной выручки
+WITH data AS (
+    SELECT array_agg(revenue ORDER BY month)::double precision[] AS arr
+    FROM monthly_revenue
+),
+decomposed AS (
+    SELECT (stl_decompose(arr, 12)).*
+    FROM data
+)
+SELECT
+    unnest(trend)    AS trend,
+    unnest(seasonal) AS seasonal,
+    unnest(residual) AS residual
+FROM decomposed;
+```
+
+
+### Вспомогательные функции
+
+```sql
+stl_trend(y, period, ...)    RETURNS double precision[]
+stl_seasonal(y, period, ...) RETURNS double precision[]
+stl_residual(y, period, ...) RETURNS double precision[]
+```
+
+Те же параметры, что у `stl_decompose`, но возвращают одну компоненту.
+
+```sql
+-- Ряд без тренда (сезонность + остаток)
+SELECT
+    dt,
+    revenue - (stl_trend(arr, 12))[rn] AS detrended
+FROM (
+    SELECT dt, revenue,
+           row_number() OVER (ORDER BY dt) AS rn,
+           array_agg(revenue) OVER (
+               ORDER BY dt
+               ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+           ) AS arr
+    FROM monthly_revenue
+) s;
+```
+
+
+## Описание алгоритма STL 
+
+
+Любой временной ряд $y_t$ можно представить в виде:
 
 $$
 y_t = T_t + S_t + R_t
 $$
 
-Метод основан на локально-взвешенной регрессии (LOESS) и итеративной схеме уточнения компонент.
+где $T_t$ — тренд, $S_t$ — сезонная компонента, $R_t$ — остаток. STL оценивает все три компоненты итеративно.
 
+### LOESS 
 
-**1. Общая итеративная схема STL**
+Всё в STL построено на LOESS (локально взвешенное сглаживание разброса). 
+Идея: чтобы оценить сглаженное значение в точке $x_0$, строится локальная взвешенная регрессия только по ближайшим соседям, взвешенным по расстоянию. 
 
-Алгоритм выполняется итеративно:
+**Шаг 1.** Находим $q$ ближайших соседей точки $x_0$ и вычисляем максимальное расстояние $d_{max}$.
 
-- удаляется тренд
-- оценивается сезонность
-- пересчитывается тренд
-- при необходимости обновляются робастные веса
-
-В коде функции
-```
-for (int o = 0; o < n_outer; o++) {
-    const double *wrob = (o == 0) ? NULL : rw;
-
-    for (int inner = 0; inner < cfg->inner_iter; inner++) {
-
-        for (int i = 0; i < n; i++)
-            detr[i] = y[i] - trend[i];
-
-        seasonal_step(detr, n, cfg->period,
-                      cfg->seasonal, cfg->low_pass,
-                      cfg->seasonal_deg, cfg->low_pass_deg,
-                      cfg->seasonal_jump, cfg->low_pass_jump,
-                      wrob, season);
-
-        for (int i = 0; i < n; i++)
-            desea[i] = y[i] - season[i];
-
-        trend_step(desea, n,
-                   cfg->trend, cfg->trend_deg, cfg->trend_jump,
-                   wrob, trend);
-    }
-
-    if (cfg->robust && o < n_outer - 1)
-        compute_robust_weights(y, trend, season, n, rw);
-}
-```
-
-**LOESS (локальная регрессия)**
-
-Трикубическая функция весов:
+**Шаг 2.** Назначаем трикубические веса по нормированному расстоянию:
 
 $$
-w(x)=\left(1-|x|^3\right)^3
+w_i = \left(1 - \left(\frac{|x_i - x_0|}{d_{max}}\right)^3\right)^3
 $$
 
-В коде функции
+Точки, далёкие от $x_0$, получают вес близкий к 0; ближайшая точка получает вес 1.
 
-```
-static double tricube(double x) {
-    x = fabs(x);
-    if (x >= 1.0) return 0.0;
-    double t = 1.0 - x * x * x;
-    return t * t * t;
-}
-```
-**Локальная линейная регрессия**
+**Шаг 3.** Подгоняем взвешенную линейную регрессию $y = a + b(x - x_0)$:
 
 $$
-y = a + bx
+b = \frac{\sum w_i (x_i - x_0) y_i}{\sum w_i (x_i - x_0)^2}, \quad a = \frac{\sum w_i y_i - b \sum w_i (x_i - x_0)}{\sum w_i}
 $$
 
-$$
-b = \frac{\sum w x y - \sum w x \sum w y}{\sum w x^2 - (\sum w x)^2}
-$$
+Сглаженное значение в точке $x_0$ — это просто $a$ (свободный член, так как предиктор центрирован в $x_0$).
+
+**Почему важно центрирование:** в реализации используется $dx = x_i - x_0$, а не сырое $x_i$. В точке запроса $x_0$ подогнанное значение равно ровно $a + b \cdot 0 = a$, что численно устойчиво независимо от масштаба $x$.
+
+При реализации использовал оригинальная статья ["Robust Locally Weighted Regression and Smoothing Scatterplo"](https://home.engineering.iastate.edu/~shermanp/STAT447/Lectures/Cleveland%20paper.pdf)
+
+### Внешний цикл — сезонный шаг
+
+Для каждой сезонной фазы $p \in \{0, 1, \dots, P-1\}$ ряд прореживается в позициях $p, p+P, p+2P, \dots$, образуя короткую подпоследовательность длиной $\approx n/P$. LOESS подгоняется к каждой подпоследовательности независимо. 
+
+Склеенные LOESS-подгонки образуют временный массив $C_v$ (длина $n$). Он всё ещё содержит низкочастотную составляющую, общую для всех фаз, поэтому применяется и вычитается низкочастотный фильтр (три последовательных LOESS-прохода):
 
 $$
-a = \frac{\sum w y - b \sum w x}{\sum w}
+S_t = C_v(t) - \text{НизкочастотныйФильтр}(C_v)(t)
 $$
 
-В коде функции
-```
-double sw = 0, swx = 0, swy = 0, swxx = 0, swxy = 0;
+Трёхпроходный низкочастотный фильтр (LOESS с окном $n_l$, затем снова с $n_l$, затем с окном 3) имеет такую частотную характеристику, которая чисто разделяет сезонные и трендовые частоты.
 
-for (int j = 0; j < nd; j++) {
-    double w = tricube(dist[j] / dmax);
-    if (wrob) w *= wrob[j];
+### Внутренний цикл — шаг тренда
 
-    sw   += w;
-    swx  += w * xd[j];
-    swy  += w * yd[j];
-    swxx += w * xd[j] * xd[j];
-    swxy += w * xd[j] * yd[j];
-}
-
-double b = (sw * swxy - swx * swy) / (sw * swxx - swx * swx);
-double a = (swy - b * swx) / sw;
-```
-
-**Jump-интерполяция LOESS**
-
-В коде функции
-```
-for (int i = 0; i < nq; i += jump)
-    sidx[ns++] = i;
-
-if (sidx[ns - 1] != nq - 1)
-    sidx[ns++] = nq - 1;
-```
-**Сезонная компонента**
+После оценки сезонности десезонированный ряд:
 
 $$
-y^{(p)} = {y_p, y_{p+P}, y_{p+2P}, ...}
+y_t^* = y_t - S_t
 $$
 
-В коде функции
-```
-for (int p = 0; p < period; p++) {
+LOESS применяется непосредственно к $y_t^*$ для извлечения тренда $T_t$. Более широкое окно $n_t$ даёт более гладкий тренд, отражающий только медленные движения.
 
-    int m = 0;
-    for (int i = p; i < n; i += period) m++;
-
-    double *xsub = malloc(m * sizeof(double));
-    double *ysub = malloc(m * sizeof(double));
-
-    int idx = 0;
-    for (int i = p; i < n; i += period) {
-        xsub[idx] = (double)idx;
-        ysub[idx] = detr[i];
-        idx++;
-    }
-
-    loess_fit(xsub, m, xsub, ysub, m,
-              bw, deg_s, wsub, jump_s, yhat);
-
-    idx = 0;
-    for (int i = p; i < n; i += period)
-        cv[i] = yhat[idx++];
-}
-```
-
-**Низкочастотная фильтрация**
+**Автовыбор $n_t$:** формула по умолчанию
 
 $$
-S_t = C_v - LOESS(C_v)
+n_t = \text{ближайшее нечётное целое} > \frac{1.5 P}{1 - 1.5 / n_s}
 $$
 
-В коде функции
-```
-loess_fit(xs, n, xs, cv, n, n_l, deg_l, NULL, jump_l, lp);
+обеспечивает, что окно тренда достаточно широко относительно сезонного окна, чтобы подавить просачивание низкочастотной сезонности в тренд.
 
-for (int i = 0; i < n; i++)
-    season[i] = cv[i] - lp[i];
-```
+### Внешний цикл — робастные веса
 
-**Тренд**
+При `robust=true` после каждого прохода внутреннего цикла анализируются остатки $R_t = y_t - T_t - S_t$. Точки с большими остатками (выбросы, структурные сдвиги) получают низкие веса для следующей итерации через функцию биквадрата:
 
 $$
-y_t^{(deseasoned)} = y_t - S_t
+\rho_t = \left(1 - \left(\frac{R_t}{6 \cdot \text{MAD}}\right)^2\right)^2
 $$
 
-$$
-T_t = LOESS(y_t^{(deseasoned)})
-$$
+где $\text{MAD} = \text{медиана}(|R_t - \text{медиана}(R)|)$.
 
-В коде функции
-```
-for (int i = 0; i < n; i++)
-    desea[i] = y[i] - season[i];
+Этот вес перемножается с весами LOESS на следующем проходе. Выбросы постепенно получают меньший вес, поэтому они не искажают оценки тренда и сезонности. 15 итераций внешнего цикла по умолчанию более чем достаточно для сходимости на практике.
 
-loess_fit(xs, n, xs, desea, n,
-          n_t, deg_t, wrob, jump_t, trend);
-```
-
-**Остаток**
-
-$$
-R_t = y_t - T_t - S_t
-$$
-
-В коде функции
-```
-for (int i = 0; i < n; i++)
-    residual[i] = y[i] - trend[i] - season[i];
-```
-
-**Робастные веса**
-
-$$
-MAD = median(|r_t - median(r)|)
-$$
-
-$$
-w_t = \left(1 - \left(\frac{r_t}{6 \cdot MAD}\right)^2\right)^2
-$$
-
-В коде функции
-```c
-for (int i = 0; i < n; i++)
-    r[i] = y[i] - trend[i] - season[i];
-
-double mad = mad_vec(r, n);
-double c = 6.0 * mad;
-
-for (int i = 0; i < n; i++)
-    rw[i] = bisquare(r[i] / c);
-```
-
-**Автовыбор параметров**
-
-Тренд:
-
-$$
-n_t = \text{next odd integer} > \frac{1.5P}{1 - 1.5/n_s}
-$$
+Полное описание алгоритма описано в статье ["STL a seasonal trend decomposition procedure based on loess"](https://www.scb.se/contentassets/ca21efb41fee47d293bbee5bf7be7fb3/stl-a-seasonal-trend-decomposition-procedure-based-on-loess.pdf)
 
 
-В коде функции
-```
-double t = 1.5 * c->period / (1.0 - 1.5 / (double)c->seasonal);
-c->trend = next_odd_gt(t);
-```
+## Особенности реализации на C
 
-**Низкочастотное окно:**
+- Массивы переменной длины (VLA) не используются — динамические размеры выделяются через `palloc` 
+- Все выделения автоматически освобождаются по завершении запроса — ручная очистка в обычных случаях не требуется.
 
-$$
-n_l > P
-$$
-
-В коде функции
-```
-c->low_pass = next_odd_gt((double)c->period);
-```
