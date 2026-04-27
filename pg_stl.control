@@ -1,0 +1,4 @@
+comment = 'STL decomposition extension'
+default_version = '1.0'
+module_pathname = '$libdir/pg_stl'
+relocatable = true

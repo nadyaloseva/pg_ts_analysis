@@ -1,0 +1,23 @@
+services:
+
+  postgres:
+    build:
+      context: .        # берёт Dockerfile из текущей папки pg_stl/
+      dockerfile: Dockerfile
+    container_name: pg_stl_db
+    environment:
+      POSTGRES_USER:     stl_user
+      POSTGRES_PASSWORD: stl_pass
+      POSTGRES_DB:       stl_db
+    ports:
+      - "5433:5432"     # 5433 чтобы не конфликтовать с локальным PG
+    volumes:
+      - pg_stl_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U stl_user -d stl_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pg_stl_data:
