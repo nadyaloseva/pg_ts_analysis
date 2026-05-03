@@ -12,6 +12,7 @@ pg_stl/
 ├── docker-compose.yml
 ├── Dockerfile
 ├── 01_create_extension.sql
+├── pg_python_testing.ipynb # Сравнение результатов и производительности по сравнению с Python-реализацией
 ```
 ## Установка
 
