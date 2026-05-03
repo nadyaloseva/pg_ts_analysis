@@ -15,12 +15,6 @@ pg_stl/
 ```
 ## Установка
 
-### Через Docker
-
-```bash
-docker compose up --build
-```
-
 ### Ручная сборка
 
 ```bash
@@ -30,6 +24,12 @@ psql -d mydb -c "CREATE EXTENSION pg_stl;"
 ```
 
 **Требования:** PostgreSQL 16, `postgresql-server-dev-16`, `build-essential`.
+
+**Через Docker можно создать тестовую базу данных и использовать для доработки расширения**
+
+```bash
+docker compose up --build
+```
 
 ## Функции
 
