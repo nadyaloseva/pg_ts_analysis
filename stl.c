@@ -25,19 +25,26 @@ static double acf_lag(const double *data, int n, int lag)
 
     if (lag >= n || n < 2) return 0.0;
 
+
     mean = 0.0;
     for (i = 0; i < n; i++) mean += data[i];
     mean /= n;
 
     var0 = 0.0;
+    for (i = 0; i < n; i++)
+    {
+        d1    = data[i] - mean;
+        var0 += d1 * d1;
+    }
+
     cov_lag = 0.0;
     for (i = 0; i < n - lag; i++)
     {
         d1 = data[i]       - mean;
         d2 = data[i + lag] - mean;
-        var0    += d1 * d1;
         cov_lag += d1 * d2;
     }
+
     return var0 > 1e-10 ? cov_lag / var0 : 0.0;
 }
 
@@ -75,9 +82,10 @@ Datum acf_array(PG_FUNCTION_ARGS)
 static void pacf_yw(const double *x, int n, int max_lag, double *out)
 {
     double *r;
-    double *phi;   /* max_lag+1 x max_lag+1, row-major */
+    double *phi;
     double *sigma;
     double  mean;
+    double  var0;
     double  sum;
     int     i, j, k;
 
@@ -87,7 +95,6 @@ static void pacf_yw(const double *x, int n, int max_lag, double *out)
     phi   = (double *) palloc((max_lag + 1) * (max_lag + 1) * sizeof(double));
     sigma = (double *) palloc((max_lag + 1) * sizeof(double));
 
-    /* инициализация */
     for (i = 0; i <= max_lag; i++)
     {
         sigma[i] = 0.0;
@@ -95,7 +102,6 @@ static void pacf_yw(const double *x, int n, int max_lag, double *out)
             phi[i * (max_lag + 1) + j] = 0.0;
     }
 
-    /* вычисляем автокорреляции r[0..max_lag] */
     mean = 0.0;
     for (i = 0; i < n; i++) mean += x[i];
     mean /= n;
@@ -105,18 +111,22 @@ static void pacf_yw(const double *x, int n, int max_lag, double *out)
         sum = 0.0;
         for (i = 0; i < n - k; i++)
             sum += (x[i] - mean) * (x[i + k] - mean);
-        r[k] = (n > 0) ? sum / n : 0.0;
+        r[k] = sum / n;
     }
 
-    if (fabs(r[0]) < 1e-12)
+    var0 = r[0];
+    if (fabs(var0) < 1e-12)
     {
         for (k = 1; k <= max_lag; k++) out[k - 1] = 0.0;
         pfree(r); pfree(phi); pfree(sigma);
         return;
     }
 
+    for (k = 0; k <= max_lag; k++)
+        r[k] /= var0;
+
     /* алгоритм Дурбина-Левинсона */
-    sigma[0] = r[0];
+    sigma[0] = 1.0;   
     for (k = 1; k <= max_lag; k++)
     {
         sum = 0.0;
@@ -225,32 +235,57 @@ static int next_odd_gt(double x)
     return v;
 }
 
+static double kth_smallest(double *arr, int n, int k)
+{
+    int    lo, hi, mid, i, j;
+    double pivot, tmp;
+
+    lo = 0; hi = n - 1;
+    while (lo < hi)
+    {
+        mid   = lo + (hi - lo) / 2;
+        pivot = arr[mid];
+
+        tmp = arr[mid]; arr[mid] = arr[hi]; arr[hi] = tmp;
+        j = lo;
+        for (i = lo; i < hi; i++)
+        {
+            if (arr[i] <= pivot)
+            {
+                tmp = arr[i]; arr[i] = arr[j]; arr[j] = tmp;
+                j++;
+            }
+        }
+        tmp = arr[j]; arr[j] = arr[hi]; arr[hi] = tmp;
+
+        if      (j == k) return arr[j];
+        else if (j  < k) lo = j + 1;
+        else             hi = j - 1;
+    }
+    return arr[lo];
+}
+
 
 /* LOESS в одной точке x0  */
-/*   Предиктор центрирован: dx = xi - x0 */
-
 static double loess_at(double x0,
                        const double *xd, const double *yd, int nd,
                        int bandwidth, int deg,
-                       const double *wrob)
+                       const double *wrob,
+                       double *dist,   
+                       double *dtmp)   
 {
-    double *dist;
-    double *dtmp;
     double  dmax;
     double  sw, sw_dx, sw_dx2, sw_dxy, sw_y;
     double  denom, b, a;
     int     j;
 
-    dist = (double *) palloc(nd * sizeof(double));
-    dtmp = (double *) palloc(nd * sizeof(double));
 
     for (j = 0; j < nd; j++)
         dist[j] = fabs(xd[j] - x0);
 
     memcpy(dtmp, dist, nd * sizeof(double));
-    qsort(dtmp, nd, sizeof(double), cmp_double);
-
-    dmax = dtmp[bandwidth - 1];
+    dmax = kth_smallest(dtmp, nd, bandwidth - 1);
+    
     if (dmax < 1e-12) dmax = 1e-12;
 
     sw = sw_dx = sw_dx2 = sw_dxy = sw_y = 0.0;
@@ -266,8 +301,6 @@ static double loess_at(double x0,
         sw_y   += w * yd[j];
     }
 
-    pfree(dist);
-    pfree(dtmp);
 
     if (sw < 1e-12) return 0.0;
     if (deg == 0)   return sw_y / sw;
@@ -277,7 +310,7 @@ static double loess_at(double x0,
     {
         b = (sw * sw_dxy - sw_dx * sw_y) / denom;
         a = (sw_y - b * sw_dx) / sw;
-        return a;   /* при x = x0: a + b*0 = a */
+        return a;
     }
     return sw_y / sw;
 }
@@ -292,17 +325,21 @@ static void loess_fit(const double *xs, int nq,
 {
     int    *sidx;
     double *sval;
+    double *dist_buf;  
+    double *dtmp_buf;   
     int     max_s;
     int     ns, seg, i, k;
     int     bw;
 
     bw = (bandwidth < nd) ? bandwidth : nd;
     if (bw < 1)   bw   = 1;
-    if (jump < 1) jump  = 1;
+    if (jump < 3) jump  = 2;
 
     max_s = nq / jump + 2;
-    sidx  = (int *)    palloc(max_s * sizeof(int));
-    sval  = (double *) palloc(max_s * sizeof(double));
+    sidx     = (int *)    palloc(max_s * sizeof(int));
+    sval     = (double *) palloc(max_s * sizeof(double));
+    dist_buf = (double *) palloc(nd * sizeof(double));   
+    dtmp_buf = (double *) palloc(nd * sizeof(double));   
 
     ns = 0;
     for (i = 0; i < nq; i += jump)
@@ -311,7 +348,8 @@ static void loess_fit(const double *xs, int nq,
         sidx[ns++] = nq - 1;
 
     for (k = 0; k < ns; k++)
-        sval[k] = loess_at(xs[sidx[k]], xd, yd, nd, bw, deg, wrob);
+        sval[k] = loess_at(xs[sidx[k]], xd, yd, nd, bw, deg, wrob,
+                           dist_buf, dtmp_buf);  
 
     seg = 0;
     for (i = 0; i < nq; i++)
@@ -334,6 +372,8 @@ static void loess_fit(const double *xs, int nq,
 
     pfree(sidx);
     pfree(sval);
+    pfree(dist_buf);  
+    pfree(dtmp_buf);  
 }
 
 /* Три прохода LOESS                        */
@@ -501,17 +541,25 @@ static void stl_core(const double *y, int n,
     double      *detr;
     double      *desea;
     double      *rw;
+    double      *rw_prev;    
     int          n_outer;
     int          o, inner, i;
     const double *wrob;
 
     stl_resolve(cfg);
 
-    detr  = (double *) palloc(n * sizeof(double));
-    desea = (double *) palloc(n * sizeof(double));
-    rw    = (double *) palloc(n * sizeof(double));
+    detr    = (double *) palloc(n * sizeof(double));
+    desea   = (double *) palloc(n * sizeof(double));
+    rw      = (double *) palloc(n * sizeof(double));
+    rw_prev = (double *) palloc(n * sizeof(double));   
 
-    for (i = 0; i < n; i++) { trend[i] = 0.0; season[i] = 0.0; rw[i] = 1.0; }
+    for (i = 0; i < n; i++)
+    {
+        trend[i]   = 0.0;
+        season[i]  = 0.0;
+        rw[i]      = 1.0;
+        rw_prev[i] = 1.0;    
+    }
 
     n_outer = cfg->robust ? cfg->outer_iter + 1 : 1;
 
@@ -537,7 +585,21 @@ static void stl_core(const double *y, int n,
         }
 
         if (cfg->robust && o < n_outer - 1)
+        {
+            double max_change = 0.0;    
+            double diff;
+
             compute_robust_weights(y, trend, season, n, rw);
+
+            for (i = 0; i < n; i++)
+            {
+                diff = fabs(rw[i] - rw_prev[i]);
+                if (diff > max_change) max_change = diff;
+                rw_prev[i] = rw[i];
+            }
+
+            if (max_change < 1e-6) break;   
+        }
     }
 
     for (i = 0; i < n; i++)
@@ -546,6 +608,7 @@ static void stl_core(const double *y, int n,
     pfree(detr);
     pfree(desea);
     pfree(rw);
+    pfree(rw_prev);   
 }
 
 
@@ -642,9 +705,9 @@ Datum stl_decompose(PG_FUNCTION_ARGS)
     cfg.trend_deg     = 1;
     cfg.low_pass_deg  = 1;
     cfg.robust        = robust ? 1 : 0;
-    cfg.seasonal_jump = 1;
-    cfg.trend_jump    = 1;
-    cfg.low_pass_jump = 1;
+    cfg.seasonal_jump = 3;
+    cfg.trend_jump    = 3;
+    cfg.low_pass_jump = 3;
     cfg.inner_iter    = inner_iter;
     cfg.outer_iter    = outer_iter;
 
@@ -729,9 +792,9 @@ static ArrayType *stl_component(PG_FUNCTION_ARGS, int component)
     cfg.trend_deg     = 1;
     cfg.low_pass_deg  = 1;
     cfg.robust        = robust ? 1 : 0;
-    cfg.seasonal_jump = 1;
-    cfg.trend_jump    = 1;
-    cfg.low_pass_jump = 1;
+    cfg.seasonal_jump = 3;
+    cfg.trend_jump    = 3;
+    cfg.low_pass_jump = 3;
     cfg.inner_iter    = (inner_iter < 1) ? 1 : inner_iter;
     cfg.outer_iter    = (outer_iter < 0) ? 0 : outer_iter;
 
