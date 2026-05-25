@@ -5,6 +5,7 @@
 ## Структура проекта
 ```
 pg_stl/
+├── LICENSE # лицензия расширения PostgreSQL
 ├── stl.c                  # Реализация на C (ACF, PACF, STL)
 ├── pg_stl--1.0.sql        # Определения SQL-функций
 ├── pg_stl.control         # Метаданные расширения
