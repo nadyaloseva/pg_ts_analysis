@@ -294,7 +294,6 @@ $$
 ## Дополнительно в расширение добавлен алгоритм  Хольта-Винтерса, созданный Pugolovok Alexander (tg: @alexander_pu)
 Вот текст для добавления в README:
 
----
 
 ### `holt_winters_predict`
 
@@ -333,6 +332,3 @@ SELECT * FROM holt_winters_predict(
 
 **Требования:** PostgreSQL 16+
 
----
-
-Можно вставить после раздела про `stl_decompose` или в отдельный раздел `## Forecasting`.
